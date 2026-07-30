@@ -360,7 +360,7 @@
     </p>
 
     <p class="note">
-      初回録画時にカメラとマイクの許可が必要です。
+      初回録画時にカメラとマイクの許可が必要です。録音した音は自動で音量調整されます。
       保存ボタンを押すと共有画面が開き、iPhoneでは「ビデオを保存」または
       「ファイルに保存」を選べます。GitHub PagesなどHTTPSのページで使用してください。
     </p>
@@ -390,12 +390,13 @@
         videoMime: "",
         audioBuffer: null,
         gainNode: null,
-        volume: 0.8,
+        volume: 1.0,
         steps: Array(STEP_COUNT).fill(false)
       }))
     };
 
     let audioContext = null;
+    let masterGain = null;
     let mediaStream = null;
 
     const tracksElement = document.getElementById("tracks");
@@ -512,10 +513,14 @@
 
         audioContext = new AudioContextClass({ latencyHint: "interactive" });
 
+        masterGain = audioContext.createGain();
+        masterGain.gain.value = 1.6;
+        masterGain.connect(audioContext.destination);
+
         state.tracks.forEach((track) => {
           track.gainNode = audioContext.createGain();
           track.gainNode.gain.value = track.volume;
-          track.gainNode.connect(audioContext.destination);
+          track.gainNode.connect(masterGain);
         });
       }
 
@@ -572,6 +577,27 @@
       });
 
       return result;
+    }
+
+    function normalizePcm(samples, targetPeak = 0.92) {
+      let peak = 0;
+
+      for (let i = 0; i < samples.length; i += 1) {
+        const absolute = Math.abs(samples[i]);
+        if (absolute > peak) peak = absolute;
+      }
+
+      if (peak < 0.0001) return samples;
+
+      // 極端なノイズ増幅を避けるため、最大8倍までに制限する。
+      const gain = Math.min(8, targetPeak / peak);
+      const normalized = new Float32Array(samples.length);
+
+      for (let i = 0; i < samples.length; i += 1) {
+        normalized[i] = Math.max(-1, Math.min(1, samples[i] * gain));
+      }
+
+      return normalized;
     }
 
     async function recordTrack(trackIndex) {
@@ -639,7 +665,7 @@
 
         const actualMime = recorder.mimeType || mimeType || "video/webm";
         const videoBlob = new Blob(videoChunks, { type: actualMime });
-        const pcm = concatFloat32(pcmChunks);
+        const pcm = normalizePcm(concatFloat32(pcmChunks));
 
         if (!videoBlob.size || !pcm.length) {
           throw new Error("録画できませんでした。もう一度試してください。");
@@ -664,8 +690,6 @@
         track.audioBuffer = audioBuffer;
 
         document.getElementById(`track-state-${trackIndex}`).textContent = "録画済み";
-        document.getElementById(`preview-${trackIndex}`).disabled = false;
-        document.getElementById(`save-${trackIndex}`).disabled = false;
 
         status.textContent = `${track.name}を録画しました。ステップを押して配置してね。`;
         showVideos([trackIndex], false);
@@ -691,21 +715,29 @@
       clearButton.disabled = disabled;
       bpmInput.disabled = disabled;
 
-      document.querySelectorAll(".track-controls button").forEach((button) => {
-        if (disabled) {
-          button.dataset.wasDisabled = String(button.disabled);
-          button.disabled = true;
-        } else {
-          button.disabled = button.dataset.wasDisabled === "true";
-          delete button.dataset.wasDisabled;
-        }
+      document.querySelectorAll(".record-button").forEach((button) => {
+        button.disabled = disabled;
+      });
+
+      state.tracks.forEach((track, trackIndex) => {
+        const previewButton = document.getElementById(`preview-${trackIndex}`);
+        const saveButton = document.getElementById(`save-${trackIndex}`);
+
+        previewButton.disabled = disabled || !track.videoBlob;
+        saveButton.disabled = disabled || !track.videoBlob;
       });
     }
 
     function previewTrack(trackIndex) {
       const track = state.tracks[trackIndex];
-      if (!track.videoUrl) return;
-      showVideos([trackIndex], true);
+      if (!track.videoUrl) {
+        status.textContent = "まだ動画が録画されていません。";
+        return;
+      }
+
+      stop();
+      showVideos([trackIndex], true, true);
+      status.textContent = `${track.name}を確認再生しています。`;
     }
 
     async function saveTrack(trackIndex) {
@@ -737,18 +769,25 @@
         console.error(error);
       }
 
-      const link = document.createElement("a");
-      link.href = track.videoUrl;
-      link.download = file.name;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
+      try {
+        const link = document.createElement("a");
+        link.href = track.videoUrl;
+        link.download = file.name;
+        link.style.display = "none";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
 
-      status.textContent =
-        "共有機能が使えないため、動画ファイルとしてダウンロードしました。";
+        status.textContent =
+          "動画ファイルを保存しました。iPhoneでは「ダウンロード」フォルダも確認してください。";
+      } catch (error) {
+        console.error(error);
+        status.textContent =
+          "保存できませんでした。Safariの共有ボタンから保存してください。";
+      }
     }
 
-    function showVideos(trackIndices, playVideo) {
+    function showVideos(trackIndices, playVideo, withSound = false) {
       videoStage.innerHTML = "";
       videoStage.classList.remove("empty");
 
@@ -772,7 +811,8 @@
         const video = document.createElement("video");
         video.className = "stage-video";
         video.src = track.videoUrl;
-        video.muted = true;
+        video.muted = !withSound;
+        video.volume = withSound ? 1 : 0;
         video.playsInline = true;
         video.preload = "auto";
         video.loop = false;
@@ -782,7 +822,13 @@
 
         if (playVideo) {
           const promise = video.play();
-          if (promise) promise.catch(() => {});
+          if (promise) {
+            promise.catch((error) => {
+              console.error(error);
+              status.textContent =
+                "動画を再生できませんでした。もう一度「確認」を押してください。";
+            });
+          }
         }
       });
 
