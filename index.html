@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#111318" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>Ambient Step Sequencer v18</title>
+  <title>Ambient Step Sequencer v20</title>
 
   <style>
     :root {
@@ -214,6 +214,13 @@
       font-weight: 900;
     }
 
+    .transport button:disabled {
+      background: #4a4f59 !important;
+      color: #9ca3af !important;
+      opacity: .7;
+      cursor: not-allowed;
+    }
+
     #playButton { background: var(--green); color: #061108; }
     #stopButton { background: var(--red); color: white; }
     #clearButton {
@@ -407,7 +414,7 @@
 <body>
   <main class="app">
     <h1>Ambient Step Sequencer</h1>
-    <div class="version">Version 18</div>
+    <div class="version">Version 20</div>
     <p class="subtitle">
       2秒の動画で音を集めて、8ステップのサウンドシーケンスを作ろう
     </p>
@@ -436,7 +443,7 @@
 
     <section class="transport">
       <button id="playButton" type="button">▶ PLAY</button>
-      <button id="stopButton" type="button">■ STOP</button>
+      <button id="stopButton" type="button" disabled>■ STOP</button>
       <button id="clearButton" type="button">CLEAR</button>
       <button id="exportButton" type="button">4 LOOPを動画保存</button>
 
@@ -464,6 +471,7 @@
       保存ボタンを押すと共有画面が開き、iPhoneでは「ビデオを保存」または
       「ファイルに保存」を選べます。「4 LOOPを動画保存」では、現在の音と映像の
       シーケンスを4周分、ひとつの動画として実時間で書き出します。
+      書き出し音声は高音質設定で保存します。
       GitHub PagesなどHTTPSのページで使用してください。
     </p>
   </main>
@@ -894,7 +902,8 @@
     }
 
     function setControlsDisabled(disabled) {
-      playButton.disabled = disabled;
+      playButton.disabled = disabled || state.playing;
+      stopButton.disabled = disabled || !state.playing;
       clearButton.disabled = disabled;
       exportButton.disabled = disabled;
       bpmInput.disabled = disabled;
@@ -1274,6 +1283,7 @@
 
       let renderFrameId = null;
       let recordDestination = null;
+      let exportGain = null;
       let canvasStream = null;
 
       try {
@@ -1335,7 +1345,13 @@
 
         canvasStream = canvas.captureStream(30);
         recordDestination = audioContext.createMediaStreamDestination();
-        masterGain.connect(recordDestination);
+
+        // 通常再生用の2.8倍マスターをそのまま録音すると、
+        // 動画エンコーダー側で潰れやすいため、書き出し専用に適正レベルへ戻す。
+        exportGain = audioContext.createGain();
+        exportGain.gain.value = 0.42;
+        masterGain.connect(exportGain);
+        exportGain.connect(recordDestination);
 
         const outputStream = new MediaStream([
           ...canvasStream.getVideoTracks(),
@@ -1343,9 +1359,17 @@
         ]);
 
         const mimeType = chooseVideoMimeType();
-        const recorder = mimeType
-          ? new MediaRecorder(outputStream, { mimeType })
-          : new MediaRecorder(outputStream);
+
+        const recorderOptions = {
+          audioBitsPerSecond: 320000,
+          videoBitsPerSecond: 6000000
+        };
+
+        if (mimeType) {
+          recorderOptions.mimeType = mimeType;
+        }
+
+        const recorder = new MediaRecorder(outputStream, recorderOptions);
 
         const chunks = [];
         recorder.addEventListener("dataavailable", (event) => {
@@ -1437,8 +1461,12 @@
         if (renderFrameId) cancelAnimationFrame(renderFrameId);
 
         try {
+          if (exportGain) {
+            masterGain.disconnect(exportGain);
+            exportGain.disconnect();
+          }
+
           if (recordDestination) {
-            masterGain.disconnect(recordDestination);
             recordDestination.stream.getTracks().forEach((track) => track.stop());
           }
         } catch (_) {}
@@ -1475,6 +1503,8 @@
         scheduler();
 
         playButton.textContent = "PLAYING";
+        playButton.disabled = true;
+        stopButton.disabled = false;
         status.textContent = "再生中";
       } catch (error) {
         console.error(error);
@@ -1492,6 +1522,8 @@
       }
 
       playButton.textContent = "▶ PLAY";
+      playButton.disabled = state.recording || state.exporting;
+      stopButton.disabled = true;
 
       document.querySelectorAll(".step.playhead").forEach((element) => {
         element.classList.remove("playhead");
