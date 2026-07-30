@@ -344,7 +344,6 @@
 
     function setBusy(busy) {
       state.converting = busy;
-      playButton.disabled = busy;
       clearButton.disabled = busy;
       bpmInput.disabled = busy;
 
@@ -639,7 +638,7 @@
           error?.message ||
           `${file.name} を読み込めませんでした。`;
       } finally {
-        window.setTimeout(() => setBusy(false), 300);
+        setBusy(false);
       }
     }
 
@@ -717,7 +716,12 @@
     }
 
     async function start() {
-      if (state.playing || state.converting) return;
+      if (state.playing) return;
+
+      if (state.converting) {
+        status.textContent = "音声を準備中です。読み込みが完了するまで少し待ってください。";
+        return;
+      }
 
       try {
         await ensureAudioContext();
