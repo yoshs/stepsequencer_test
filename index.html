@@ -302,6 +302,8 @@
         buffer: null,
         mediaUrl: null,
         mediaTemplate: null,
+        mediaPlayers: [],
+        playerIndex: 0,
         volume: 0.8,
         gainNode: null,
         steps: Array(STEP_COUNT).fill(false)
@@ -372,6 +374,9 @@
           if (track.gainNode && audioContext) {
             track.gainNode.gain.setValueAtTime(track.volume, audioContext.currentTime);
           }
+          track.mediaPlayers.forEach((player) => {
+            player.volume = track.volume;
+          });
         });
 
         volumeLabel.append(volume);
@@ -428,9 +433,18 @@
       if (track.mediaUrl) {
         URL.revokeObjectURL(track.mediaUrl);
       }
+      track.mediaPlayers.forEach((player) => {
+        try {
+          player.pause();
+          player.removeAttribute("src");
+          player.load();
+        } catch (_) {}
+      });
       track.buffer = null;
       track.mediaUrl = null;
       track.mediaTemplate = null;
+      track.mediaPlayers = [];
+      track.playerIndex = 0;
     }
 
     async function loadFile(file, trackIndex) {
@@ -485,6 +499,21 @@
 
         track.mediaUrl = url;
         track.mediaTemplate = media;
+
+        // iPhoneでは、再生中に新しいvideo/audio要素を作ると
+        // 2つ目以降の再生が止められることがあるため、あらかじめ用意する。
+        track.mediaPlayers = Array.from({ length: 4 }, () => {
+          const player = document.createElement(
+            file.type.startsWith("video/") ? "video" : "audio"
+          );
+          player.src = url;
+          player.preload = "auto";
+          player.playsInline = true;
+          player.volume = track.volume;
+          return player;
+        });
+        track.playerIndex = 0;
+
         track.fileName = file.name;
         document.getElementById(`file-name-${trackIndex}`).textContent = file.name;
         status.textContent = `${track.name} に ${file.name} を読み込みました。動画の場合は音だけ再生します。`;
@@ -507,27 +536,29 @@
         return;
       }
 
-      if (track.mediaTemplate) {
+      if (track.mediaPlayers.length > 0) {
         const delay = Math.max(0, (time - audioContext.currentTime) * 1000);
 
         window.setTimeout(() => {
-          const player = track.mediaTemplate.cloneNode(true);
-          player.volume = track.volume;
-          player.currentTime = 0;
-          player.playsInline = true;
-          player.play().catch((error) => {
-            console.error(error);
-            status.textContent = "動画・音声の再生がブラウザに止められました。もう一度PLAYを押してください。";
-          });
+          const player = track.mediaPlayers[track.playerIndex];
+          track.playerIndex = (track.playerIndex + 1) % track.mediaPlayers.length;
 
-          const remove = () => {
+          try {
             player.pause();
-            player.removeAttribute("src");
-            player.load();
-          };
+            player.currentTime = 0;
+            player.volume = track.volume;
 
-          player.addEventListener("ended", remove, { once: true });
-          window.setTimeout(remove, 30000);
+            const promise = player.play();
+            if (promise) {
+              promise.catch((error) => {
+                console.error(error);
+                status.textContent =
+                  "動画音声の同時再生がiPhoneに止められました。PLAYをもう一度押してください。";
+              });
+            }
+          } catch (error) {
+            console.error(error);
+          }
         }, delay);
       }
     }
@@ -577,8 +608,40 @@
       });
     }
 
+    function unlockMediaPlayers() {
+      // PLAYボタンを押したユーザー操作の最中に、すべてのメディア要素を
+      // 一度だけ無音で再生し、iOS Safariの再生制限を解除する。
+      state.tracks.forEach((track) => {
+        track.mediaPlayers.forEach((player) => {
+          try {
+            const originalVolume = player.volume;
+            player.muted = true;
+            player.currentTime = 0;
+
+            const promise = player.play();
+            if (promise) {
+              promise
+                .then(() => {
+                  player.pause();
+                  player.currentTime = 0;
+                  player.muted = false;
+                  player.volume = originalVolume;
+                })
+                .catch(() => {
+                  player.muted = false;
+                  player.volume = originalVolume;
+                });
+            }
+          } catch (_) {}
+        });
+      });
+    }
+
     async function start() {
       if (state.playing) return;
+
+      // awaitより前に実行し、PLAYタップのユーザー操作として扱わせる。
+      unlockMediaPlayers();
 
       try {
         await ensureAudioContext();
