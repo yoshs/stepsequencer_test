@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#111318" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>Video Rhythm Workshop</title>
+  <title>Ambient Step Sequencer v12</title>
 
   <style>
     :root {
@@ -63,9 +63,18 @@
     }
 
     h1 {
-      margin: 0 0 5px;
+      margin: 0 0 3px;
       font-size: clamp(25px, 7vw, 42px);
       line-height: 1.1;
+    }
+
+    .version {
+      margin-bottom: 6px;
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
     }
 
     .subtitle {
@@ -321,9 +330,10 @@
 
 <body>
   <main class="app">
-    <h1>Video Rhythm Workshop</h1>
+    <h1>Ambient Step Sequencer</h1>
+    <div class="version">Version 12</div>
     <p class="subtitle">
-      2秒の動画で音を集めて、8ステップのリズムを作ろう
+      2秒の動画で音を集めて、8ステップのサウンドシーケンスを作ろう
     </p>
 
     <section class="screen">
@@ -347,7 +357,7 @@
       <button id="clearButton" type="button">CLEAR</button>
 
       <label class="bpm-row">
-        <span>BPM</span>
+        <span>BPM（1ステップ）</span>
         <input id="bpmInput" type="number" inputmode="numeric"
                min="30" max="300" value="60" />
       </label>
@@ -360,7 +370,7 @@
     </p>
 
     <p class="note">
-      初回録画時にカメラとマイクの許可が必要です。録音した音は自動で音量調整されます。
+      初回録画時にカメラとマイクの許可が必要です。録音入力にはリミッターがかかり、録音後の音量も自動調整されます。出力側にはリミッターを使用していません。
       保存ボタンを押すと共有画面が開き、iPhoneでは「ビデオを保存」または
       「ファイルに保存」を選べます。GitHub PagesなどHTTPSのページで使用してください。
     </p>
@@ -514,7 +524,7 @@
         audioContext = new AudioContextClass({ latencyHint: "interactive" });
 
         masterGain = audioContext.createGain();
-        masterGain.gain.value = 1.6;
+        masterGain.gain.value = 2.8;
         masterGain.connect(audioContext.destination);
 
         state.tracks.forEach((track) => {
@@ -579,7 +589,7 @@
       return result;
     }
 
-    function normalizePcm(samples, targetPeak = 0.92) {
+    function normalizePcm(samples, targetPeak = 0.98) {
       let peak = 0;
 
       for (let i = 0; i < samples.length; i += 1) {
@@ -589,8 +599,8 @@
 
       if (peak < 0.0001) return samples;
 
-      // 極端なノイズ増幅を避けるため、最大8倍までに制限する。
-      const gain = Math.min(8, targetPeak / peak);
+      // 小さい録音をしっかり持ち上げる。極端なノイズ増幅を避けるため最大12倍。
+      const gain = Math.min(12, targetPeak / peak);
       const normalized = new Float32Array(samples.length);
 
       for (let i = 0; i < samples.length; i += 1) {
@@ -635,6 +645,18 @@
         });
 
         const source = audioContext.createMediaStreamSource(stream);
+
+        // 録音入力にだけ強めのリミッターをかける。
+        const inputLimiter = audioContext.createDynamicsCompressor();
+        inputLimiter.threshold.value = -10;
+        inputLimiter.knee.value = 0;
+        inputLimiter.ratio.value = 20;
+        inputLimiter.attack.value = 0.002;
+        inputLimiter.release.value = 0.12;
+
+        const inputGain = audioContext.createGain();
+        inputGain.gain.value = 2.0;
+
         const processor = audioContext.createScriptProcessor(4096, 1, 1);
         const silentGain = audioContext.createGain();
         silentGain.gain.value = 0;
@@ -646,7 +668,9 @@
           pcmChunks.push(new Float32Array(input));
         };
 
-        source.connect(processor);
+        source.connect(inputGain);
+        inputGain.connect(inputLimiter);
+        inputLimiter.connect(processor);
         processor.connect(silentGain);
         silentGain.connect(audioContext.destination);
 
@@ -660,6 +684,8 @@
         await stopped;
 
         source.disconnect();
+        inputGain.disconnect();
+        inputLimiter.disconnect();
         processor.disconnect();
         silentGain.disconnect();
 
@@ -760,7 +786,7 @@
           await navigator.share({
             files: [file],
             title: `Track ${trackIndex + 1}`,
-            text: "Video Rhythm Workshopで録画した動画"
+            text: "Ambient Step Sequencerで録画した動画"
           });
           return;
         }
@@ -850,7 +876,9 @@
     }
 
     function secondsPerStep() {
-      return (60 / state.bpm) / 4;
+      // BPMをそのまま1ステップの速さとして扱う。
+      // BPM 60なら1ステップ＝1秒。
+      return 60 / state.bpm;
     }
 
     function scheduleStep(stepIndex, time, generation) {
