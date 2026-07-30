@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#111318" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>Ambient Step Sequencer v20</title>
+  <title>Ambient Step Sequencer v21</title>
 
   <style>
     :root {
@@ -414,7 +414,7 @@
 <body>
   <main class="app">
     <h1>Ambient Step Sequencer</h1>
-    <div class="version">Version 20</div>
+    <div class="version">Version 21</div>
     <p class="subtitle">
       2秒の動画で音を集めて、8ステップのサウンドシーケンスを作ろう
     </p>
@@ -471,7 +471,7 @@
       保存ボタンを押すと共有画面が開き、iPhoneでは「ビデオを保存」または
       「ファイルに保存」を選べます。「4 LOOPを動画保存」では、現在の音と映像の
       シーケンスを4周分、ひとつの動画として実時間で書き出します。
-      書き出し音声は高音質設定で保存します。
+      書き出し音声は通常再生のマスターを通さず、各トラックを直接ミックスして高音質設定で保存します。
       GitHub PagesなどHTTPSのページで使用してください。
     </p>
   </main>
@@ -627,7 +627,10 @@
           throw new Error("このブラウザはWeb Audio APIに対応していません。");
         }
 
-        audioContext = new AudioContextClass({ latencyHint: "interactive" });
+        audioContext = new AudioContextClass({
+          latencyHint: "interactive",
+          sampleRate: 48000
+        });
 
         masterGain = audioContext.createGain();
         masterGain.gain.value = 2.8;
@@ -775,14 +778,14 @@
 
         // 保存動画とシーケンサー用音声の両方に、同じ入力処理を使う。
         const inputGain = audioContext.createGain();
-        inputGain.gain.value = 3.0;
+        inputGain.gain.value = 2.0;
 
         const inputLimiter = audioContext.createDynamicsCompressor();
-        inputLimiter.threshold.value = -12;
-        inputLimiter.knee.value = 0;
-        inputLimiter.ratio.value = 20;
-        inputLimiter.attack.value = 0.002;
-        inputLimiter.release.value = 0.12;
+        inputLimiter.threshold.value = -6;
+        inputLimiter.knee.value = 6;
+        inputLimiter.ratio.value = 8;
+        inputLimiter.attack.value = 0.003;
+        inputLimiter.release.value = 0.08;
 
         const processedDestination = audioContext.createMediaStreamDestination();
 
@@ -1033,9 +1036,9 @@
       }
     }
 
-    function triggerAudio(trackIndex, time) {
+    function triggerAudio(trackIndex, time, destinationNode = null) {
       const track = state.tracks[trackIndex];
-      if (!track.audioBuffer || !track.gainNode || !audioContext) return;
+      if (!track.audioBuffer || !audioContext) return;
 
       const source = audioContext.createBufferSource();
       source.buffer = track.audioBuffer;
@@ -1052,7 +1055,19 @@
       fadeGain.gain.linearRampToValueAtTime(0, time + duration);
 
       source.connect(fadeGain);
-      fadeGain.connect(track.gainNode);
+
+      let exportTrackGain = null;
+
+      if (destinationNode) {
+        // 動画書き出し時は通常再生のmasterGainを通さず、
+        // 各トラックの音量だけを反映して直接ミックスする。
+        exportTrackGain = audioContext.createGain();
+        exportTrackGain.gain.setValueAtTime(track.volume, time);
+        fadeGain.connect(exportTrackGain);
+        exportTrackGain.connect(destinationNode);
+      } else if (track.gainNode) {
+        fadeGain.connect(track.gainNode);
+      }
 
       source.start(time);
       source.stop(time + duration);
@@ -1061,6 +1076,7 @@
         try {
           source.disconnect();
           fadeGain.disconnect();
+          exportTrackGain?.disconnect();
         } catch (_) {}
       }, { once: true });
     }
@@ -1283,7 +1299,6 @@
 
       let renderFrameId = null;
       let recordDestination = null;
-      let exportGain = null;
       let canvasStream = null;
 
       try {
@@ -1346,13 +1361,6 @@
         canvasStream = canvas.captureStream(30);
         recordDestination = audioContext.createMediaStreamDestination();
 
-        // 通常再生用の2.8倍マスターをそのまま録音すると、
-        // 動画エンコーダー側で潰れやすいため、書き出し専用に適正レベルへ戻す。
-        exportGain = audioContext.createGain();
-        exportGain.gain.value = 0.42;
-        masterGain.connect(exportGain);
-        exportGain.connect(recordDestination);
-
         const outputStream = new MediaStream([
           ...canvasStream.getVideoTracks(),
           ...recordDestination.stream.getAudioTracks()
@@ -1370,6 +1378,11 @@
         }
 
         const recorder = new MediaRecorder(outputStream, recorderOptions);
+
+        const actualAudioRate =
+          recorder.audioBitsPerSecond || recorderOptions.audioBitsPerSecond;
+        const actualVideoRate =
+          recorder.videoBitsPerSecond || recorderOptions.videoBitsPerSecond;
 
         const chunks = [];
         recorder.addEventListener("dataavailable", (event) => {
@@ -1393,7 +1406,9 @@
         const totalDuration = totalSteps * stepDuration;
 
         status.textContent =
-          `4ループを書き出しています… 約${totalDuration.toFixed(1)}秒`;
+          `4ループを書き出しています… 約${totalDuration.toFixed(1)}秒 / ` +
+          `${recorder.mimeType || mimeType || "自動"} / ` +
+          `音声 ${Math.round(actualAudioRate / 1000)}kbps`;
 
         for (let absoluteStep = 0; absoluteStep < totalSteps; absoluteStep += 1) {
           const stepIndex = absoluteStep % STEP_COUNT;
@@ -1401,7 +1416,7 @@
           const tracksForStep = getActiveTracksForStep(stepIndex);
 
           tracksForStep.forEach((trackIndex) => {
-            triggerAudio(trackIndex, eventTime);
+            triggerAudio(trackIndex, eventTime, recordDestination);
           });
 
           const delay = Math.max(
@@ -1461,11 +1476,6 @@
         if (renderFrameId) cancelAnimationFrame(renderFrameId);
 
         try {
-          if (exportGain) {
-            masterGain.disconnect(exportGain);
-            exportGain.disconnect();
-          }
-
           if (recordDestination) {
             recordDestination.stream.getTracks().forEach((track) => track.stop());
           }
