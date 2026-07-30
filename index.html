@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#111318" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>Ambient Step Sequencer v16</title>
+  <title>Ambient Step Sequencer v17</title>
 
   <style>
     :root {
@@ -181,6 +181,19 @@
       border: 1px solid var(--border);
     }
 
+    #exportButton {
+      grid-column: 1 / -1;
+      background: var(--blue);
+      color: #03131f;
+    }
+
+    .export-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      background: #000;
+    }
+
     .bpm-row {
       grid-column: 1 / -1;
       display: flex;
@@ -353,7 +366,7 @@
 <body>
   <main class="app">
     <h1>Ambient Step Sequencer</h1>
-    <div class="version">Version 16</div>
+    <div class="version">Version 17</div>
     <p class="subtitle">
       2秒の動画で音を集めて、8ステップのサウンドシーケンスを作ろう
     </p>
@@ -377,6 +390,7 @@
       <button id="playButton" type="button">▶ PLAY</button>
       <button id="stopButton" type="button">■ STOP</button>
       <button id="clearButton" type="button">CLEAR</button>
+      <button id="exportButton" type="button">4 LOOPを動画保存</button>
 
       <label class="bpm-row">
         <span>BPM（1ステップ）</span>
@@ -400,7 +414,9 @@
     <p class="note">
       初回録画時にカメラとマイクの許可が必要です。録音入力にはゲインとリミッターがかかり、その処理済み音声が保存動画にも入ります。録画時間は2秒です。再生時のフェードアウト時間はFADEスライダーで0〜500msに調整できます。出力側にはリミッターを使用していません。
       保存ボタンを押すと共有画面が開き、iPhoneでは「ビデオを保存」または
-      「ファイルに保存」を選べます。GitHub PagesなどHTTPSのページで使用してください。
+      「ファイルに保存」を選べます。「4 LOOPを動画保存」では、現在の音と映像の
+      シーケンスを4周分、ひとつの動画として実時間で書き出します。
+      GitHub PagesなどHTTPSのページで使用してください。
     </p>
   </main>
 
@@ -416,6 +432,7 @@
       fadeMs: 80,
       playing: false,
       recording: false,
+      exporting: false,
       currentStep: 0,
       nextTime: 0,
       timerId: null,
@@ -446,6 +463,7 @@
     const playButton = document.getElementById("playButton");
     const stopButton = document.getElementById("stopButton");
     const clearButton = document.getElementById("clearButton");
+    const exportButton = document.getElementById("exportButton");
     const bpmInput = document.getElementById("bpmInput");
     const fadeInput = document.getElementById("fadeInput");
     const fadeValue = document.getElementById("fadeValue");
@@ -798,6 +816,7 @@
     function setControlsDisabled(disabled) {
       playButton.disabled = disabled;
       clearButton.disabled = disabled;
+      exportButton.disabled = disabled;
       bpmInput.disabled = disabled;
       fadeInput.disabled = disabled;
 
@@ -1024,6 +1043,339 @@
       });
     }
 
+
+    function getActiveTracksForStep(stepIndex) {
+      const activeTracks = [];
+
+      state.tracks.forEach((track, trackIndex) => {
+        if (
+          track.steps[stepIndex] &&
+          track.audioBuffer &&
+          track.videoUrl
+        ) {
+          activeTracks.push(trackIndex);
+        }
+      });
+
+      return activeTracks;
+    }
+
+    function drawVideoGrid(context, canvas, activeTracks, exportVideos) {
+      context.fillStyle = "#000";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+
+      if (!activeTracks.length) {
+        context.fillStyle = "#a3aab7";
+        context.textAlign = "center";
+        context.textBaseline = "middle";
+        context.font = "700 34px system-ui, sans-serif";
+        context.fillText(
+          "Ambient Step Sequencer",
+          canvas.width / 2,
+          canvas.height / 2
+        );
+        return;
+      }
+
+      let columns = 1;
+      let rows = 1;
+
+      if (activeTracks.length === 2) {
+        columns = 2;
+      } else if (activeTracks.length >= 3) {
+        columns = 2;
+        rows = 2;
+      }
+
+      const cellWidth = canvas.width / columns;
+      const cellHeight = canvas.height / rows;
+
+      activeTracks.forEach((trackIndex, position) => {
+        const video = exportVideos[trackIndex];
+        if (!video || video.readyState < 2) return;
+
+        const column = position % columns;
+        const row = Math.floor(position / columns);
+        const x = column * cellWidth;
+        const y = row * cellHeight;
+
+        const sourceRatio = video.videoWidth / video.videoHeight;
+        const cellRatio = cellWidth / cellHeight;
+
+        let sourceX = 0;
+        let sourceY = 0;
+        let sourceWidth = video.videoWidth;
+        let sourceHeight = video.videoHeight;
+
+        if (sourceRatio > cellRatio) {
+          sourceWidth = video.videoHeight * cellRatio;
+          sourceX = (video.videoWidth - sourceWidth) / 2;
+        } else {
+          sourceHeight = video.videoWidth / cellRatio;
+          sourceY = (video.videoHeight - sourceHeight) / 2;
+        }
+
+        context.drawImage(
+          video,
+          sourceX,
+          sourceY,
+          sourceWidth,
+          sourceHeight,
+          x,
+          y,
+          cellWidth,
+          cellHeight
+        );
+      });
+    }
+
+    async function shareOrDownloadSequence(blob, mimeType) {
+      const extension = mimeType.includes("mp4") ? "mp4" : "webm";
+      const file = new File(
+        [blob],
+        `ambient-step-sequence-4loops.${extension}`,
+        { type: mimeType }
+      );
+
+      try {
+        if (
+          navigator.share &&
+          navigator.canShare &&
+          navigator.canShare({ files: [file] })
+        ) {
+          await navigator.share({
+            files: [file],
+            title: "Ambient Step Sequencer",
+            text: "4ループの映像と音のシーケンス"
+          });
+          return;
+        }
+      } catch (error) {
+        if (error?.name === "AbortError") return;
+        console.error(error);
+      }
+
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = file.name;
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+
+      window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+      status.textContent =
+        "4ループの動画を書き出しました。ダウンロードフォルダを確認してください。";
+    }
+
+    async function exportFourLoops() {
+      if (state.recording || state.exporting) return;
+
+      const hasSequence = state.tracks.some((track) => {
+        return track.audioBuffer && track.steps.some(Boolean);
+      });
+
+      if (!hasSequence) {
+        status.textContent =
+          "録画した素材をステップに配置してから保存してください。";
+        return;
+      }
+
+      if (!HTMLCanvasElement.prototype.captureStream) {
+        status.textContent =
+          "このブラウザはシーケンス動画の書き出しに対応していません。";
+        return;
+      }
+
+      stop();
+      state.exporting = true;
+      setControlsDisabled(true);
+
+      let renderFrameId = null;
+      let recordDestination = null;
+      let canvasStream = null;
+
+      try {
+        await ensureAudioContext();
+
+        const canvas = document.createElement("canvas");
+        canvas.className = "export-canvas";
+        canvas.width = 720;
+        canvas.height = 720;
+
+        videoStage.innerHTML = "";
+        videoStage.classList.remove("empty");
+        videoStage.style.gridTemplateColumns = "1fr";
+        videoStage.style.gridTemplateRows = "1fr";
+        videoStage.appendChild(canvas);
+
+        const context = canvas.getContext("2d", { alpha: false });
+        const exportVideos = [];
+
+        for (let index = 0; index < TRACK_COUNT; index += 1) {
+          const track = state.tracks[index];
+
+          if (!track.videoUrl) {
+            exportVideos[index] = null;
+            continue;
+          }
+
+          const video = document.createElement("video");
+          video.src = track.videoUrl;
+          video.muted = true;
+          video.playsInline = true;
+          video.preload = "auto";
+          video.loop = false;
+
+          await new Promise((resolve) => {
+            if (video.readyState >= 2) {
+              resolve();
+              return;
+            }
+
+            const finish = () => resolve();
+            video.addEventListener("loadeddata", finish, { once: true });
+            video.addEventListener("error", finish, { once: true });
+            video.load();
+          });
+
+          exportVideos[index] = video;
+        }
+
+        let activeTracks = [];
+        let rendering = true;
+
+        const render = () => {
+          if (!rendering) return;
+          drawVideoGrid(context, canvas, activeTracks, exportVideos);
+          renderFrameId = requestAnimationFrame(render);
+        };
+        render();
+
+        canvasStream = canvas.captureStream(30);
+        recordDestination = audioContext.createMediaStreamDestination();
+        masterGain.connect(recordDestination);
+
+        const outputStream = new MediaStream([
+          ...canvasStream.getVideoTracks(),
+          ...recordDestination.stream.getAudioTracks()
+        ]);
+
+        const mimeType = chooseVideoMimeType();
+        const recorder = mimeType
+          ? new MediaRecorder(outputStream, { mimeType })
+          : new MediaRecorder(outputStream);
+
+        const chunks = [];
+        recorder.addEventListener("dataavailable", (event) => {
+          if (event.data?.size) chunks.push(event.data);
+        });
+
+        const recorderStarted = new Promise((resolve) => {
+          recorder.addEventListener("start", resolve, { once: true });
+        });
+
+        const recorderStopped = new Promise((resolve) => {
+          recorder.addEventListener("stop", resolve, { once: true });
+        });
+
+        recorder.start(250);
+        await recorderStarted;
+
+        const stepDuration = secondsPerStep();
+        const totalSteps = STEP_COUNT * 4;
+        const startTime = audioContext.currentTime + 0.15;
+        const totalDuration = totalSteps * stepDuration;
+
+        status.textContent =
+          `4ループを書き出しています… 約${totalDuration.toFixed(1)}秒`;
+
+        for (let absoluteStep = 0; absoluteStep < totalSteps; absoluteStep += 1) {
+          const stepIndex = absoluteStep % STEP_COUNT;
+          const eventTime = startTime + absoluteStep * stepDuration;
+          const tracksForStep = getActiveTracksForStep(stepIndex);
+
+          tracksForStep.forEach((trackIndex) => {
+            triggerAudio(trackIndex, eventTime);
+          });
+
+          const delay = Math.max(
+            0,
+            (eventTime - audioContext.currentTime) * 1000
+          );
+
+          window.setTimeout(() => {
+            activeTracks = tracksForStep;
+
+            tracksForStep.forEach((trackIndex) => {
+              const video = exportVideos[trackIndex];
+              if (!video) return;
+
+              try {
+                video.pause();
+                video.currentTime = 0;
+                const promise = video.play();
+                if (promise) promise.catch(() => {});
+              } catch (_) {}
+            });
+
+            updatePlayhead(stepIndex);
+          }, delay);
+        }
+
+        await wait((startTime - audioContext.currentTime) * 1000 + totalDuration * 1000 + 150);
+
+        recorder.requestData();
+        await wait(100);
+        recorder.stop();
+        await recorderStopped;
+
+        rendering = false;
+        if (renderFrameId) cancelAnimationFrame(renderFrameId);
+
+        const actualMime =
+          recorder.mimeType ||
+          mimeType ||
+          "video/webm";
+
+        const resultBlob = new Blob(chunks, { type: actualMime });
+
+        if (!resultBlob.size) {
+          throw new Error("シーケンス動画を作成できませんでした。");
+        }
+
+        status.textContent = "4ループの動画が完成しました。";
+        await shareOrDownloadSequence(resultBlob, actualMime);
+
+      } catch (error) {
+        console.error(error);
+        status.textContent =
+          error?.message ||
+          "シーケンス動画の保存に失敗しました。";
+      } finally {
+        if (renderFrameId) cancelAnimationFrame(renderFrameId);
+
+        try {
+          if (recordDestination) {
+            masterGain.disconnect(recordDestination);
+            recordDestination.stream.getTracks().forEach((track) => track.stop());
+          }
+        } catch (_) {}
+
+        try {
+          canvasStream?.getTracks().forEach((track) => track.stop());
+        } catch (_) {}
+
+        state.exporting = false;
+        setControlsDisabled(false);
+
+        document.querySelectorAll(".step.playhead").forEach((element) => {
+          element.classList.remove("playhead");
+        });
+      }
+    }
+
     async function start() {
       if (state.playing || state.recording) return;
 
@@ -1109,6 +1461,7 @@
     });
 
     clearButton.addEventListener("click", clearPattern);
+    exportButton.addEventListener("click", exportFourLoops);
     bpmInput.addEventListener("change", updateBpm);
     bpmInput.addEventListener("blur", updateBpm);
     fadeInput.addEventListener("input", updateFade);
