@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#111318" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>Ambient Step Sequencer v17</title>
+  <title>Ambient Step Sequencer v18</title>
 
   <style>
     :root {
@@ -124,30 +124,71 @@
     }
 
     .record-overlay {
-      position: absolute;
+      position: fixed;
       inset: 0;
       display: none;
-      place-items: center;
-      z-index: 20;
-      background: rgba(0,0,0,.76);
+      z-index: 1000;
+      overflow: hidden;
+      background: #000;
     }
 
     .record-overlay.visible {
+      display: block;
+    }
+
+    .record-preview {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      background: #000;
+    }
+
+    .record-shade {
+      position: absolute;
+      inset: 0;
       display: grid;
+      place-items: center;
+      padding:
+        max(24px, env(safe-area-inset-top))
+        max(24px, env(safe-area-inset-right))
+        max(24px, env(safe-area-inset-bottom))
+        max(24px, env(safe-area-inset-left));
+      background:
+        radial-gradient(circle at center, rgba(0,0,0,.08), rgba(0,0,0,.58));
+    }
+
+    .record-panel {
+      min-width: min(78vw, 360px);
+      padding: 24px;
+      border: 2px solid rgba(255,255,255,.45);
+      border-radius: 24px;
+      background: rgba(0,0,0,.34);
+      text-align: center;
+      box-shadow: 0 20px 70px rgba(0,0,0,.45);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
     }
 
     .countdown {
-      font-size: clamp(70px, 24vw, 150px);
+      font-size: clamp(76px, 25vw, 160px);
       font-weight: 900;
-      line-height: 1;
-      text-shadow: 0 5px 30px rgba(0,0,0,.5);
+      line-height: .95;
+      text-shadow: 0 5px 30px rgba(0,0,0,.7);
     }
 
     .recording-label {
-      margin-top: 10px;
-      font-size: 18px;
-      font-weight: 800;
+      margin-top: 14px;
+      font-size: clamp(18px, 5vw, 28px);
+      font-weight: 900;
       text-align: center;
+      text-shadow: 0 3px 16px rgba(0,0,0,.8);
+    }
+
+    body.recording-active {
+      overflow: hidden;
+      touch-action: none;
     }
 
     .transport {
@@ -366,7 +407,7 @@
 <body>
   <main class="app">
     <h1>Ambient Step Sequencer</h1>
-    <div class="version">Version 17</div>
+    <div class="version">Version 18</div>
     <p class="subtitle">
       2秒の動画で音を集めて、8ステップのサウンドシーケンスを作ろう
     </p>
@@ -379,9 +420,16 @@
       </div>
 
       <div id="recordOverlay" class="record-overlay">
-        <div>
-          <div id="countdown" class="countdown">3</div>
-          <div id="recordingLabel" class="recording-label">準備してね</div>
+        <video id="recordPreview"
+               class="record-preview"
+               muted
+               playsinline
+               autoplay></video>
+        <div class="record-shade">
+          <div class="record-panel">
+            <div id="countdown" class="countdown">3</div>
+            <div id="recordingLabel" class="recording-label">準備してね</div>
+          </div>
         </div>
       </div>
     </section>
@@ -412,7 +460,7 @@
     </p>
 
     <p class="note">
-      初回録画時にカメラとマイクの許可が必要です。録音入力にはゲインとリミッターがかかり、その処理済み音声が保存動画にも入ります。録画時間は2秒です。再生時のフェードアウト時間はFADEスライダーで0〜500msに調整できます。出力側にはリミッターを使用していません。
+      初回録画時にカメラとマイクの許可が必要です。録画中は画面全体にカメラ映像とカウントダウンが表示されます。録音入力にはゲインとリミッターがかかり、その処理済み音声が保存動画にも入ります。録画時間は2秒です。再生時のフェードアウト時間はFADEスライダーで0〜500msに調整できます。出力側にはリミッターを使用していません。
       保存ボタンを押すと共有画面が開き、iPhoneでは「ビデオを保存」または
       「ファイルに保存」を選べます。「4 LOOPを動画保存」では、現在の音と映像の
       シーケンスを4周分、ひとつの動画として実時間で書き出します。
@@ -458,6 +506,7 @@
     const tracksElement = document.getElementById("tracks");
     const videoStage = document.getElementById("videoStage");
     const recordOverlay = document.getElementById("recordOverlay");
+    const recordPreview = document.getElementById("recordPreview");
     const countdown = document.getElementById("countdown");
     const recordingLabel = document.getElementById("recordingLabel");
     const playButton = document.getElementById("playButton");
@@ -659,6 +708,35 @@
       return normalized;
     }
 
+    async function showRecordingOverlay(stream, trackIndex) {
+      recordPreview.srcObject = stream;
+      recordPreview.muted = true;
+      recordPreview.playsInline = true;
+
+      recordOverlay.classList.add("visible");
+      document.body.classList.add("recording-active");
+
+      countdown.textContent = "3";
+      recordingLabel.textContent =
+        `${state.tracks[trackIndex].name}：準備してね`;
+
+      try {
+        await recordPreview.play();
+      } catch (error) {
+        console.error("カメラプレビューを開始できませんでした。", error);
+      }
+    }
+
+    function hideRecordingOverlay() {
+      recordOverlay.classList.remove("visible");
+      document.body.classList.remove("recording-active");
+
+      try {
+        recordPreview.pause();
+        recordPreview.srcObject = null;
+      } catch (_) {}
+    }
+
     async function recordTrack(trackIndex) {
       if (state.recording) return;
 
@@ -670,16 +748,18 @@
         await ensureAudioContext();
         const stream = await ensureMediaStream();
 
-        recordOverlay.classList.add("visible");
+        await showRecordingOverlay(stream, trackIndex);
 
         for (let number = 3; number >= 1; number -= 1) {
           countdown.textContent = String(number);
-          recordingLabel.textContent = "準備してね";
+          recordingLabel.textContent =
+            `${state.tracks[trackIndex].name}：準備してね`;
           await wait(700);
         }
 
         countdown.textContent = "●";
-        recordingLabel.textContent = "録画中！";
+        recordingLabel.textContent =
+          `${state.tracks[trackIndex].name}：録画中！`;
 
         const videoChunks = [];
 
@@ -803,7 +883,7 @@
           error?.message ||
           "録画に失敗しました。カメラとマイクの許可を確認してください。";
       } finally {
-        recordOverlay.classList.remove("visible");
+        hideRecordingOverlay();
         state.recording = false;
         setControlsDisabled(false);
       }
