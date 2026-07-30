@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#111318" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>Ambient Step Sequencer v12</title>
+  <title>Ambient Step Sequencer v14</title>
 
   <style>
     :root {
@@ -331,7 +331,7 @@
 <body>
   <main class="app">
     <h1>Ambient Step Sequencer</h1>
-    <div class="version">Version 12</div>
+    <div class="version">Version 14</div>
     <p class="subtitle">
       2秒の動画で音を集めて、8ステップのサウンドシーケンスを作ろう
     </p>
@@ -359,7 +359,7 @@
       <label class="bpm-row">
         <span>BPM（1ステップ）</span>
         <input id="bpmInput" type="number" inputmode="numeric"
-               min="30" max="300" value="60" />
+               min="30" max="300" value="120" />
       </label>
     </section>
 
@@ -370,7 +370,7 @@
     </p>
 
     <p class="note">
-      初回録画時にカメラとマイクの許可が必要です。録音入力にはリミッターがかかり、録音後の音量も自動調整されます。出力側にはリミッターを使用していません。
+      初回録画時にカメラとマイクの許可が必要です。録音入力にはゲインとリミッターがかかり、その処理済み音声が保存動画にも入ります。録画時間は2秒です。出力側にはリミッターを使用していません。
       保存ボタンを押すと共有画面が開き、iPhoneでは「ビデオを保存」または
       「ファイルに保存」を選べます。GitHub PagesなどHTTPSのページで使用してください。
     </p>
@@ -384,7 +384,7 @@
     const RECORD_SECONDS = 2;
 
     const state = {
-      bpm: 60,
+      bpm: 120,
       playing: false,
       recording: false,
       currentStep: 0,
@@ -633,29 +633,21 @@
         recordingLabel.textContent = "録画中！";
 
         const videoChunks = [];
-        const mimeType = chooseVideoMimeType();
-        const recorder = mimeType
-          ? new MediaRecorder(stream, { mimeType })
-          : new MediaRecorder(stream);
-
-        recorder.addEventListener("dataavailable", (event) => {
-          if (event.data && event.data.size > 0) {
-            videoChunks.push(event.data);
-          }
-        });
 
         const source = audioContext.createMediaStreamSource(stream);
 
-        // 録音入力にだけ強めのリミッターをかける。
+        // 保存動画とシーケンサー用音声の両方に、同じ入力処理を使う。
+        const inputGain = audioContext.createGain();
+        inputGain.gain.value = 3.0;
+
         const inputLimiter = audioContext.createDynamicsCompressor();
-        inputLimiter.threshold.value = -10;
+        inputLimiter.threshold.value = -12;
         inputLimiter.knee.value = 0;
         inputLimiter.ratio.value = 20;
         inputLimiter.attack.value = 0.002;
         inputLimiter.release.value = 0.12;
 
-        const inputGain = audioContext.createGain();
-        inputGain.gain.value = 2.0;
+        const processedDestination = audioContext.createMediaStreamDestination();
 
         const processor = audioContext.createScriptProcessor(4096, 1, 1);
         const silentGain = audioContext.createGain();
@@ -670,16 +662,48 @@
 
         source.connect(inputGain);
         inputGain.connect(inputLimiter);
+
+        // 保存動画用の処理済み音声
+        inputLimiter.connect(processedDestination);
+
+        // シーケンサー再生用のPCM収録
         inputLimiter.connect(processor);
         processor.connect(silentGain);
         silentGain.connect(audioContext.destination);
+
+        const videoTracks = stream.getVideoTracks();
+        const processedAudioTracks = processedDestination.stream.getAudioTracks();
+        const recorderStream = new MediaStream([
+          ...videoTracks,
+          ...processedAudioTracks
+        ]);
+
+        const mimeType = chooseVideoMimeType();
+        const recorder = mimeType
+          ? new MediaRecorder(recorderStream, { mimeType })
+          : new MediaRecorder(recorderStream);
+
+        recorder.addEventListener("dataavailable", (event) => {
+          if (event.data && event.data.size > 0) {
+            videoChunks.push(event.data);
+          }
+        });
+
+        const started = new Promise((resolve) => {
+          recorder.addEventListener("start", resolve, { once: true });
+        });
 
         const stopped = new Promise((resolve) => {
           recorder.addEventListener("stop", resolve, { once: true });
         });
 
         recorder.start(100);
+        await started;
+
+        // MediaRecorderが実際に開始してから、正確に2秒間録画する。
         await wait(RECORD_SECONDS * 1000);
+        recorder.requestData();
+        await wait(80);
         recorder.stop();
         await stopped;
 
@@ -688,6 +712,10 @@
         inputLimiter.disconnect();
         processor.disconnect();
         silentGain.disconnect();
+
+        processedDestination.stream.getTracks().forEach((track) => {
+          track.stop();
+        });
 
         const actualMime = recorder.mimeType || mimeType || "video/webm";
         const videoBlob = new Blob(videoChunks, { type: actualMime });
@@ -1005,7 +1033,7 @@
 
     function updateBpm() {
       const value = Number(bpmInput.value);
-      state.bpm = Math.min(300, Math.max(30, value || 60));
+      state.bpm = Math.min(300, Math.max(30, value || 120));
       bpmInput.value = String(state.bpm);
       status.textContent = `BPM ${state.bpm}`;
     }
