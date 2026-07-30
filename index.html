@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#111318" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>Ambient Step Sequencer v14</title>
+  <title>Ambient Step Sequencer v16</title>
 
   <style>
     :root {
@@ -203,6 +203,28 @@
       text-align: center;
     }
 
+    .fade-row {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 10px;
+      align-items: center;
+      padding: 0 4px 2px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .fade-row strong {
+      color: var(--blue);
+      font-weight: 900;
+    }
+
+    #fadeInput {
+      width: 100%;
+      min-height: 34px;
+    }
+
     .track {
       margin-bottom: 13px;
       padding: 11px;
@@ -331,7 +353,7 @@
 <body>
   <main class="app">
     <h1>Ambient Step Sequencer</h1>
-    <div class="version">Version 14</div>
+    <div class="version">Version 16</div>
     <p class="subtitle">
       2秒の動画で音を集めて、8ステップのサウンドシーケンスを作ろう
     </p>
@@ -361,6 +383,12 @@
         <input id="bpmInput" type="number" inputmode="numeric"
                min="30" max="300" value="120" />
       </label>
+
+      <label class="fade-row">
+        <span>FADE <strong id="fadeValue">80 ms</strong></span>
+        <input id="fadeInput" type="range"
+               min="0" max="500" step="10" value="80" />
+      </label>
     </section>
 
     <section id="tracks"></section>
@@ -370,7 +398,7 @@
     </p>
 
     <p class="note">
-      初回録画時にカメラとマイクの許可が必要です。録音入力にはゲインとリミッターがかかり、その処理済み音声が保存動画にも入ります。録画時間は2秒です。出力側にはリミッターを使用していません。
+      初回録画時にカメラとマイクの許可が必要です。録音入力にはゲインとリミッターがかかり、その処理済み音声が保存動画にも入ります。録画時間は2秒です。再生時のフェードアウト時間はFADEスライダーで0〜500msに調整できます。出力側にはリミッターを使用していません。
       保存ボタンを押すと共有画面が開き、iPhoneでは「ビデオを保存」または
       「ファイルに保存」を選べます。GitHub PagesなどHTTPSのページで使用してください。
     </p>
@@ -385,6 +413,7 @@
 
     const state = {
       bpm: 120,
+      fadeMs: 80,
       playing: false,
       recording: false,
       currentStep: 0,
@@ -418,6 +447,8 @@
     const stopButton = document.getElementById("stopButton");
     const clearButton = document.getElementById("clearButton");
     const bpmInput = document.getElementById("bpmInput");
+    const fadeInput = document.getElementById("fadeInput");
+    const fadeValue = document.getElementById("fadeValue");
     const status = document.getElementById("status");
 
     function buildInterface() {
@@ -768,6 +799,7 @@
       playButton.disabled = disabled;
       clearButton.disabled = disabled;
       bpmInput.disabled = disabled;
+      fadeInput.disabled = disabled;
 
       document.querySelectorAll(".record-button").forEach((button) => {
         button.disabled = disabled;
@@ -899,8 +931,30 @@
 
       const source = audioContext.createBufferSource();
       source.buffer = track.audioBuffer;
-      source.connect(track.gainNode);
+
+      // サンプル末尾のクリック音を防ぐため、最後だけ短くフェードアウトする。
+      const fadeGain = audioContext.createGain();
+      const duration = track.audioBuffer.duration;
+      const requestedFade = state.fadeMs / 1000;
+      const fadeDuration = Math.min(requestedFade, duration * 0.8);
+      const fadeStart = Math.max(time, time + duration - fadeDuration);
+
+      fadeGain.gain.setValueAtTime(1, time);
+      fadeGain.gain.setValueAtTime(1, fadeStart);
+      fadeGain.gain.linearRampToValueAtTime(0, time + duration);
+
+      source.connect(fadeGain);
+      fadeGain.connect(track.gainNode);
+
       source.start(time);
+      source.stop(time + duration);
+
+      source.addEventListener("ended", () => {
+        try {
+          source.disconnect();
+          fadeGain.disconnect();
+        } catch (_) {}
+      }, { once: true });
     }
 
     function secondsPerStep() {
@@ -1038,6 +1092,15 @@
       status.textContent = `BPM ${state.bpm}`;
     }
 
+    function updateFade() {
+      state.fadeMs = Number(fadeInput.value);
+      fadeValue.textContent = `${state.fadeMs} ms`;
+      status.textContent =
+        state.fadeMs === 0
+          ? "フェードなし"
+          : `フェード ${state.fadeMs} ms`;
+    }
+
     playButton.addEventListener("click", start);
 
     stopButton.addEventListener("click", () => {
@@ -1048,6 +1111,7 @@
     clearButton.addEventListener("click", clearPattern);
     bpmInput.addEventListener("change", updateBpm);
     bpmInput.addEventListener("blur", updateBpm);
+    fadeInput.addEventListener("input", updateFade);
 
     document.addEventListener("visibilitychange", () => {
       if (document.hidden && state.playing) {
